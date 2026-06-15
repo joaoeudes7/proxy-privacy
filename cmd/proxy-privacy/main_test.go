@@ -26,7 +26,7 @@ func newProxyTestHandler(t *testing.T, cfg config.AppConfig, transport roundTrip
 	s := &Server{
 		Cfg:         cfg,
 		Env:         config.EnvConfig{APIKey: "upstream-key", ProxyAPIKey: "proxy-key", UpstreamBaseURL: "http://upstream.test"},
-		ProxyClient: proxy.NewWithHTTPClients("upstream-key", "http://upstream.test", false, nil, client, client),
+		ProxyClient: proxy.NewWithHTTPClients("upstream-key", "http://upstream.test", "", false, nil, client, client),
 		ModelCache:  NewModelCache(),
 	}
 	return withMiddleware(setupRouter(s), s)
@@ -57,7 +57,7 @@ func jsonResponse(status int, body string) *http.Response {
 func newProxyClient(t *testing.T, transport roundTripFunc) *proxy.Client {
 	t.Helper()
 	httpClient := &http.Client{Transport: transport}
-	return proxy.NewWithHTTPClients("test-key", "http://upstream.test", false, nil, httpClient, httpClient)
+	return proxy.NewWithHTTPClients("test-key", "http://upstream.test", "", false, nil, httpClient, httpClient)
 }
 
 func TestFetchFirstModel_Success(t *testing.T) {
@@ -463,6 +463,26 @@ func TestChatCompletionsPrivacyProviderErrorUsesNormalizedStatus(t *testing.T) {
 	resp := performRequest(t, handler, http.MethodPost, "/v1/chat/completions", "Bearer proxy-key", `{"messages":[{"role":"user","content":"hello"}]}`)
 	if resp.Code != http.StatusBadRequest {
 		t.Fatalf("chat status = %d, want %d body=%s", resp.Code, http.StatusBadRequest, resp.Body.String())
+	}
+}
+
+func TestFormatModelDisplayName(t *testing.T) {
+	tests := []struct {
+		id   string
+		want string
+	}{
+		{"openai/gpt-4o", "GPT 4o (openai/gpt-4o)"},
+		{"anthropic/claude-sonnet-4", "Claude Sonnet 4 (anthropic/claude-sonnet-4)"},
+		{"mistralai/mixtral-8x7b-instruct", "Mixtral 8x7b Instruct (mistralai/mixtral-8x7b-instruct)"},
+		{"meta-llama/llama-3.3-70b-instruct", "Llama 3.3 70B Instruct (meta-llama/llama-3.3-70b-instruct)"},
+		{"openai/gpt-4o-mini", "GPT 4o Mini (openai/gpt-4o-mini)"},
+		{"model-a", "Model A (model-a)"},
+	}
+	for _, tc := range tests {
+		got := formatModelDisplayName(tc.id)
+		if got != tc.want {
+			t.Errorf("formatModelDisplayName(%q) = %q, want %q", tc.id, got, tc.want)
+		}
 	}
 }
 

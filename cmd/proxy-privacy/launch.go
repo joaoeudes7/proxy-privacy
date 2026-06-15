@@ -288,27 +288,39 @@ func launchMain(args []string) {
 		os.Exit(1)
 	}
 
-	appCfg := config.DefaultAppConfig()
-	appCfg.PrivacyMode = config.PrivacyMode(cfg.privacyMode)
-	appCfg.RedactPII = cfg.redactPII
-	appCfg.RedactSecrets = cfg.redactSecrets
-	if cfg.model != "" {
-		appCfg.DefaultModel = cfg.model
+	proxyCfg, err := config.LoadProxyConfig()
+	if err != nil {
+		log.Printf("Warning: %v", err)
+		proxyCfg = config.DefaultProxyConfig()
 	}
-	config.SaveAppConfig(appCfg)
+	proxyCfg.PrivacyMode = config.PrivacyMode(cfg.privacyMode)
+	proxyCfg.RedactPII = cfg.redactPII
+	proxyCfg.RedactSecrets = cfg.redactSecrets
+	appCfg := proxyCfg.AppConfig()
 	envCfg := config.LoadEnvConfig()
 
-	configs, _ := config.LoadConfigs()
-	if provider, ok := config.SelectProvider(configs, cfg.provider); ok {
+	var launchSelected *config.ProviderConfig
+	if provider, ok := config.SelectProvider(proxyCfg.Providers, cfg.provider); ok {
+		launchSelected = &provider
 		if envCfg.UpstreamBaseURL == "" {
 			envCfg.UpstreamBaseURL = provider.BaseURL
 		}
 		if envCfg.APIKey == "" {
 			envCfg.APIKey = provider.APIKey
 		}
-		if cfg.model == "" && provider.DefaultModel != "" {
+		if cfg.model != "" {
+			appCfg.DefaultModel = cfg.model
+			for i := range proxyCfg.Providers {
+				if proxyCfg.Providers[i].ID == provider.ID {
+					proxyCfg.Providers[i].DefaultModel = cfg.model
+					break
+				}
+			}
+		} else if provider.DefaultModel != "" {
 			appCfg.DefaultModel = provider.DefaultModel
 		}
+		proxyCfg.DefaultModel = ""
+		config.SaveProxyConfig(proxyCfg)
 	} else if envCfg.UpstreamBaseURL == "" && envCfg.APIKey == "" {
 		log.Fatal("No providers configured. Create ~/.proxy-privacy/configs.json or set UPSTREAM_BASE_URL and OPENAI_API_KEY env vars.")
 	}
@@ -341,13 +353,24 @@ func launchMain(args []string) {
 		defer logResources.cleanup()
 	}
 
-	s := newServer(appCfg, envCfg, logResources.traceLogger)
-	if appCfg.DefaultModel == "" {
+	s := newServer(appCfg, envCfg, launchSelected, logResources.traceLogger)
+	if appCfg.DefaultModel == "" && s.Provider != nil {
 		if id := fetchFirstModel(s.ProxyClient); id != "" {
 			s.Cfg.DefaultModel = id
 			appCfg.DefaultModel = id
 			cfg.model = id
-			config.SaveAppConfig(appCfg)
+			s.Provider.DefaultModel = id
+			proxyCfg, _ := config.LoadProxyConfig()
+			if proxyCfg != nil {
+				proxyCfg.DefaultModel = ""
+				for i := range proxyCfg.Providers {
+					if proxyCfg.Providers[i].ID == s.Provider.ID {
+						proxyCfg.Providers[i].DefaultModel = id
+						break
+					}
+				}
+				config.SaveProxyConfig(proxyCfg)
+			}
 		}
 	}
 	srv, addr, err := listenAndServe(s, "127.0.0.1:0")
@@ -408,6 +431,8 @@ type launchArgs struct {
 	proxyKey        string
 	upstream        string
 	upstreamKey     string
+	sort            string
+	providerOrder   string
 	configOnly      bool
 	debugUpstream   bool
 	traceDir        string
@@ -465,6 +490,24 @@ func parseLaunchArgs(args []string) (*launchArgs, error) {
 
 		if a == "--debug-upstream" {
 			cfg.debugUpstream = true
+			continue
+		}
+
+		if a == "-s" || a == "--sort" {
+			i++
+			if i >= len(args) {
+				return nil, fmt.Errorf("-s/--sort requires a value")
+			}
+			cfg.sort = args[i]
+			continue
+		}
+
+		if a == "--provider-order" {
+			i++
+			if i >= len(args) {
+				return nil, fmt.Errorf("--provider-order requires a value")
+			}
+			cfg.providerOrder = args[i]
 			continue
 		}
 
@@ -837,7 +880,7 @@ func (r *OpenCodeRunner) Run(model string, args []string, proxyAddr, proxyKey st
 			parts := strings.SplitN(id, "/", 2)
 			clean = parts[1]
 		}
-		models[clean] = openCodeModel{ID: id, Name: clean}
+		models[clean] = openCodeModel{ID: id, Name: formatModelDisplayName(id)}
 	}
 	if modelName != "" {
 		clean := modelName
@@ -845,7 +888,7 @@ func (r *OpenCodeRunner) Run(model string, args []string, proxyAddr, proxyKey st
 			parts := strings.SplitN(modelName, "/", 2)
 			clean = parts[1]
 		}
-		models[clean] = openCodeModel{ID: modelName, Name: clean}
+		models[clean] = openCodeModel{ID: modelName, Name: formatModelDisplayName(modelName)}
 	}
 
 	cfg := openCodeConfig{
@@ -922,7 +965,7 @@ func (r *KiloRunner) Run(model string, args []string, proxyAddr, proxyKey string
 			parts := strings.SplitN(id, "/", 2)
 			clean = parts[1]
 		}
-		models[clean] = openCodeModel{ID: id, Name: clean}
+		models[clean] = openCodeModel{ID: id, Name: formatModelDisplayName(id)}
 	}
 	if modelName != "" {
 		clean := modelName
@@ -930,7 +973,7 @@ func (r *KiloRunner) Run(model string, args []string, proxyAddr, proxyKey string
 			parts := strings.SplitN(modelName, "/", 2)
 			clean = parts[1]
 		}
-		models[clean] = openCodeModel{ID: modelName, Name: clean}
+		models[clean] = openCodeModel{ID: modelName, Name: formatModelDisplayName(modelName)}
 	}
 
 	cfg := openCodeConfig{

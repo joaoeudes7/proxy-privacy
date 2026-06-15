@@ -11,7 +11,7 @@
 </p>
 </p>
 
-> Privacy is not a feature. It's the foundation.
+> Maybe you want Privacy sometimes
 
 **Proxy Privacy** is a lightweight, single-binary privacy proxy that sits between your AI agents and any OpenAI-compatible API provider. It intercepts requests to inject privacy params (`data_collection`, `zdr`) — the proxy never sends a request without them.
 
@@ -51,20 +51,28 @@ make install
 Create `~/.proxy-privacy/configs.json` with your providers:
 
 ```json
-[
-  {
-    "id": "openrouter",
-    "name": "OpenRouter",
-    "base_url": "https://openrouter.ai/api/v1",
-    "api_key": "sk-or-..."
-  },
-  {
-    "id": "openai",
-    "name": "OpenAI",
-    "base_url": "https://api.openai.com/v1",
-    "api_key": "sk-..."
-  }
-]
+{
+  "privacy_mode": "standard",
+  "redact_secrets": true,
+  "providers": [
+    {
+      "id": "openrouter",
+      "name": "OpenRouter",
+      "base_url": "https://openrouter.ai/api/v1",
+      "api_key": "sk-or-...",
+      "provider_prefs": {
+        "order": ["novita", "deepinfra"],
+        "sort": "throughput"
+      }
+    },
+    {
+      "id": "openai",
+      "name": "OpenAI",
+      "base_url": "https://api.openai.com/v1",
+      "api_key": "sk-..."
+    }
+  ]
+}
 ```
 
 The first provider in the array is used by default. Select a different one with `--provider`:
@@ -120,7 +128,7 @@ client = OpenAI(api_key="sk-proxy-dev", base_url="http://localhost:8000/v1")
 | **Body** | `provider.data_collection` | `"deny"` | `"deny"` |
 | **Body** | `provider.zdr` | — | `true` |
 | **Body** | `provider.allow_fallbacks` | `true` | `false` |
-| **Header** | `X-Title` | `"Proxy Privacy"` | `"Proxy Privacy"` |
+| **Header** | `X-Title` | Project URL | Project URL |
 | **Body** | `messages[].content` | Secrets redacted* | Secrets redacted* |
 | **Body** | `messages[].content` | PII redacted† | PII redacted† |
 
@@ -129,35 +137,56 @@ client = OpenAI(api_key="sk-proxy-dev", base_url="http://localhost:8000/v1")
 
 ## Configuration
 
+All config lives in a single file: `~/.proxy-privacy/configs.json`
+
 ### Priority
 
 **CLI flag > env var > configs.json > default**
 
 | Setting | CLI | Env var | configs.json field |
 |---------|-----|---------|-------------------|
-| Provider selection | `--provider` | — | `id` / `name` |
-| Upstream URL | `--upstream` | `UPSTREAM_BASE_URL` | `base_url` |
-| Upstream key | `--upstream-key` | `OPENAI_API_KEY` | `api_key` |
-| Default model | `-m` / `--model` | — | `default_model` |
+| Provider selection | `--provider` | — | `providers[].id` / `providers[].name` |
+| Upstream URL | `--upstream` | `UPSTREAM_BASE_URL` | `providers[].base_url` |
+| Upstream key | `--upstream-key` | `OPENAI_API_KEY` | `providers[].api_key` |
+| Default model | `-m` / `--model` | — | `providers[].default_model` |
+| Privacy mode | `-p` / `--privacy` | — | `privacy_mode` |
+| Redact secrets | `--redact-secrets` | `PROXY_REDACT_SECRETS` | `redact_secrets` |
+| Redact emails | `--redact-pii` | `PROXY_REDACT_PII` | `redact_pii` |
+| Provider sort | `-s` / `--sort` | — | `provider_prefs.sort` |
+| Provider order | `--provider-order` | — | `provider_prefs.order` |
 | Debug upstream | `--debug-upstream` | `PROXY_DEBUG_UPSTREAM` | — |
 | Trace directory | `--trace-dir` | `PROXY_TRACE_DIR` | — |
 | Proxy API key | `-k` / `--api-key` | `PROXY_API_KEY` | — |
-| Redact secrets | `--redact-secrets` | `PROXY_REDACT_SECRETS` | — |
-| Redact emails | `--redact-pii` | `PROXY_REDACT_PII` | — |
 
 ### configs.json reference
 
 ```json
-[
-  {
-    "id": "openai",
-    "name": "OpenAI",
-    "base_url": "https://api.openai.com/v1",
-    "api_key": "sk-...",
-    "default_model": "gpt-4o"
-  }
-]
+{
+  "privacy_mode": "standard",
+  "redact_pii": false,
+  "redact_secrets": true,
+  "allowed_models": null,
+  "providers": [
+    {
+      "id": "openai",
+      "name": "OpenAI",
+      "base_url": "https://api.openai.com/v1",
+      "api_key": "sk-...",
+      "default_model": "gpt-4o"
+    }
+  ]
+}
 ```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `privacy_mode` | string | `"standard"` | `"standard"` or `"strict"` |
+| `redact_pii` | bool | `false` | Redact email addresses from messages |
+| `redact_secrets` | bool | `true` | Redact API keys from messages |
+| `allowed_models` | string[] | `null` | Restrict to specific models (optional) |
+| `providers` | array | `[]` | Upstream provider configurations |
+
+Each provider object:
 
 | Field | Required | Description |
 |-------|----------|-------------|
@@ -165,7 +194,10 @@ client = OpenAI(api_key="sk-proxy-dev", base_url="http://localhost:8000/v1")
 | `name` | yes | Display name |
 | `base_url` | yes | Upstream API base URL |
 | `api_key` | yes | API key for the upstream provider |
-| `default_model` | no | Auto-fetched from `/v1/models` if omitted |
+| `default_model` | no | Model to use when none specified |
+| `default` | no | If `true`, this provider is selected by default |
+| `provider_prefs` | no | OpenRouter routing prefs: `order`, `sort`, `zdr`, etc. |
+| `models` | no | Per-model params: `temperature`, `reasoning`, `max_tokens`, etc. |
 
 ### CLI reference
 
@@ -180,6 +212,8 @@ proxy-privacy [OPTIONS]
   --port int               Listen port (default 8000)
   --host string            Bind address (default "127.0.0.1")
   -k, --api-key string     Proxy API key (env: PROXY_API_KEY, default "sk-proxy-dev")
+  -s, --sort string        Provider sort: price, throughput, latency (OpenRouter)
+  --provider-order string  Comma-separated provider slugs for routing (OpenRouter)
   --redact-pii             Redact email addresses (default: false)
   --redact-secrets         Redact API keys and secrets (default: true)
   --debug-upstream         Log upstream requests (env: PROXY_DEBUG_UPSTREAM)
@@ -197,6 +231,8 @@ proxy-privacy launch <agent> [OPTIONS]
   --upstream-key string    Upstream API key (overrides provider/config)
   --debug-upstream         Log upstream requests
   --trace-dir string       Directory for log/trace files
+  -s, --sort string        Provider sort: price, throughput, latency (OpenRouter)
+  --provider-order string  Comma-separated provider slugs for routing (OpenRouter)
   --config-only            Configure without launching
   --redact-pii             Redact email addresses (default: false)
   --redact-secrets bool    Redact API keys and secrets (default: true)
@@ -220,10 +256,10 @@ Any OpenAI-compatible API: OpenRouter, OpenAI, Anthropic, Together, Groq, DeepSe
 
 - **Single Go binary**, zero external dependencies
 - **No database** — fully ephemeral (Ctrl+C to stop)
-- **Config file** at `~/.proxy-privacy/config.json`
-- **Providers** in `~/.proxy-privacy/configs.json`
+- **Single config file** at `~/.proxy-privacy/configs.json` (global settings + providers)
 - **Anthropic compatibility** — `/v1/messages` translated to OpenAI on the fly
 - **Provider error messages** — upstream errors shown in a friendly format
+- **Client identification** — `X-Title` header sempre definido como URL do projeto
 
 ## Development
 

@@ -294,6 +294,34 @@ func TestApply_EmptyMessages(t *testing.T) {
 	}
 }
 
+func TestApply_MergesWithExistingProvider(t *testing.T) {
+	body := map[string]any{
+		"model": "openai/gpt-4o",
+		"provider": map[string]any{
+			"order": []string{"NovitaAI"},
+		},
+		"messages": []any{
+			map[string]any{
+				"role":    "user",
+				"content": "hello",
+			},
+		},
+	}
+	result := Apply(body, config.PrivacyStandard, false, false)
+
+	provider := result["provider"].(map[string]any)
+	if provider["data_collection"] != "deny" {
+		t.Errorf("expected data_collection=deny, got %v", provider["data_collection"])
+	}
+	if provider["allow_fallbacks"] != true {
+		t.Errorf("expected allow_fallbacks=true, got %v", provider["allow_fallbacks"])
+	}
+	order, ok := provider["order"].([]string)
+	if !ok || len(order) != 1 || order[0] != "NovitaAI" {
+		t.Errorf("expected order=[NovitaAI], got %v", provider["order"])
+	}
+}
+
 func TestApply_NestedContentBlocks(t *testing.T) {
 	body := map[string]any{
 		"messages": []any{

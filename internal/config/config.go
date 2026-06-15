@@ -26,12 +26,14 @@ type AppConfig struct {
 }
 
 type ProviderConfig struct {
-	ID           string `json:"id"`
-	Name         string `json:"name"`
-	BaseURL      string `json:"base_url"`
-	APIKey       string `json:"api_key"`
-	DefaultModel string `json:"default_model,omitempty"`
-	Default      bool   `json:"default,omitempty"`
+	ID            string                   `json:"id"`
+	Name          string                   `json:"name"`
+	BaseURL       string                   `json:"base_url"`
+	APIKey        string                   `json:"api_key"`
+	DefaultModel  string                   `json:"default_model,omitempty"`
+	Default       bool                     `json:"default,omitempty"`
+	ProviderPrefs map[string]any           `json:"provider_prefs,omitempty"`
+	Models        map[string]map[string]any `json:"models,omitempty"`
 }
 
 type EnvConfig struct {
@@ -42,43 +44,122 @@ type EnvConfig struct {
 	TraceDir        string
 }
 
-func DefaultAppConfig() AppConfig {
-	return AppConfig{
-		DefaultModel: "",
-		PrivacyMode:  PrivacyStandard,
-		RedactPII:    false,
+type ProxyConfig struct {
+	DefaultModel  string           `json:"default_model,omitempty"`
+	PrivacyMode   PrivacyMode      `json:"privacy_mode"`
+	RedactPII     bool             `json:"redact_pii"`
+	RedactSecrets bool             `json:"redact_secrets"`
+	AllowedModels []string         `json:"allowed_models,omitempty"`
+	Providers     []ProviderConfig `json:"providers"`
+}
+
+const DefaultClientName = "github.com/joaoeudes7/proxy-privacy"
+
+func DefaultProxyConfig() *ProxyConfig {
+	return &ProxyConfig{
+		PrivacyMode:   PrivacyStandard,
 		RedactSecrets: true,
 	}
 }
 
-func ConfigPath() (string, error) {
+func DefaultAppConfig() AppConfig {
+	return AppConfig{
+		PrivacyMode:   PrivacyStandard,
+		RedactSecrets: true,
+	}
+}
+
+func (c *ProxyConfig) AppConfig() AppConfig {
+	return AppConfig{
+		DefaultModel:  c.DefaultModel,
+		PrivacyMode:   c.PrivacyMode,
+		RedactPII:     c.RedactPII,
+		RedactSecrets: c.RedactSecrets,
+		AllowedModels: c.AllowedModels,
+	}
+}
+
+func (c *ProxyConfig) ApplyAppConfig(a AppConfig) {
+	if a.DefaultModel != "" {
+		c.DefaultModel = a.DefaultModel
+	}
+	if a.PrivacyMode != "" {
+		c.PrivacyMode = a.PrivacyMode
+	}
+	c.RedactPII = a.RedactPII
+	c.RedactSecrets = a.RedactSecrets
+	if a.AllowedModels != nil {
+		c.AllowedModels = a.AllowedModels
+	}
+}
+
+func configDir() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".proxy-privacy", "config.json"), nil
+	return filepath.Join(home, ".proxy-privacy"), nil
 }
 
-func LoadAppConfig() (AppConfig, error) {
-	cfg := DefaultAppConfig()
+func oldConfigPath() (string, error) {
+	dir, err := configDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "config.json"), nil
+}
+
+func ConfigPath() (string, error) {
+	dir, err := configDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "configs.json"), nil
+}
+
+func ConfigsPath() (string, error) {
+	return ConfigPath()
+}
+
+func LoadProxyConfig() (*ProxyConfig, error) {
+	cfg := DefaultProxyConfig()
 	path, err := ConfigPath()
 	if err != nil {
 		return cfg, err
 	}
+
 	data, err := os.ReadFile(path)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return cfg, nil
+		if !os.IsNotExist(err) {
+			return cfg, fmt.Errorf("reading configs.json: %w", err)
 		}
-		return cfg, err
+		return migrateOldConfigs(cfg)
 	}
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		return cfg, fmt.Errorf("invalid config: %w", err)
+
+	var probe struct {
+		Providers []ProviderConfig `json:"providers"`
 	}
-	return cfg, nil
+	if err := json.Unmarshal(data, &probe); err == nil && probe.Providers != nil {
+		var unified ProxyConfig
+		if err := json.Unmarshal(data, &unified); err == nil {
+			if unified.PrivacyMode == "" {
+				unified.PrivacyMode = PrivacyStandard
+			}
+			return &unified, nil
+		}
+	}
+
+	var oldProviders []ProviderConfig
+	if err := json.Unmarshal(data, &oldProviders); err == nil {
+		cfg.Providers = oldProviders
+		mergeOldAppConfig(cfg)
+		return cfg, nil
+	}
+
+	return cfg, fmt.Errorf("invalid configs.json: unknown format")
 }
 
-func SaveAppConfig(cfg AppConfig) error {
+func SaveProxyConfig(cfg *ProxyConfig) error {
 	path, err := ConfigPath()
 	if err != nil {
 		return err
@@ -95,31 +176,62 @@ func SaveAppConfig(cfg AppConfig) error {
 	return os.WriteFile(path, data, 0644)
 }
 
-func ConfigsPath() (string, error) {
-	home, err := os.UserHomeDir()
+func migrateOldConfigs(cfg *ProxyConfig) (*ProxyConfig, error) {
+	oldPath, err := oldConfigPath()
 	if err != nil {
-		return "", err
+		return cfg, nil
 	}
-	return filepath.Join(home, ".proxy-privacy", "configs.json"), nil
+
+	oldData, err := os.ReadFile(oldPath)
+	if err == nil {
+		var oldCfg AppConfig
+		if uerr := json.Unmarshal(oldData, &oldCfg); uerr == nil {
+			cfg.ApplyAppConfig(oldCfg)
+		}
+	}
+
+	return cfg, nil
+}
+
+func mergeOldAppConfig(cfg *ProxyConfig) {
+	oldPath, err := oldConfigPath()
+	if err != nil {
+		return
+	}
+	data, err := os.ReadFile(oldPath)
+	if err != nil {
+		return
+	}
+	var oldCfg AppConfig
+	if err := json.Unmarshal(data, &oldCfg); err != nil {
+		return
+	}
+	cfg.ApplyAppConfig(oldCfg)
+}
+
+func LoadAppConfig() (AppConfig, error) {
+	cfg, err := LoadProxyConfig()
+	if err != nil {
+		return DefaultAppConfig(), err
+	}
+	return cfg.AppConfig(), nil
+}
+
+func SaveAppConfig(a AppConfig) error {
+	cfg, err := LoadProxyConfig()
+	if err != nil {
+		cfg = DefaultProxyConfig()
+	}
+	cfg.ApplyAppConfig(a)
+	return SaveProxyConfig(cfg)
 }
 
 func LoadConfigs() ([]ProviderConfig, error) {
-	path, err := ConfigsPath()
+	cfg, err := LoadProxyConfig()
 	if err != nil {
 		return nil, err
 	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("reading configs: %w", err)
-	}
-	var configs []ProviderConfig
-	if err := json.Unmarshal(data, &configs); err != nil {
-		return nil, fmt.Errorf("invalid configs.json: %w", err)
-	}
-	return configs, nil
+	return cfg.Providers, nil
 }
 
 func SelectProvider(configs []ProviderConfig, id string) (ProviderConfig, bool) {

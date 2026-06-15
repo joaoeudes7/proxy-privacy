@@ -16,6 +16,7 @@ type Client struct {
 	streamClient *http.Client
 	baseURL      string
 	apiKey       string
+	clientName   string
 	debug        bool
 	logger       debugLogger
 }
@@ -42,22 +43,28 @@ func newStreamClient() *http.Client {
 	}
 }
 
-func New(apiKey, baseURL string, debug bool, logger debugLogger) *Client {
-	return NewWithHTTPClients(apiKey, baseURL, debug, logger, newHTTPClient(120*time.Second), newStreamClient())
+const defaultClientName = "github.com/joaoeudes7/proxy-privacy"
+
+func New(apiKey, baseURL, clientName string, debug bool, logger debugLogger) *Client {
+	return NewWithHTTPClients(apiKey, baseURL, clientName, debug, logger, newHTTPClient(120*time.Second), newStreamClient())
 }
 
-func NewWithHTTPClients(apiKey, baseURL string, debug bool, logger debugLogger, httpClient, streamClient *http.Client) *Client {
+func NewWithHTTPClients(apiKey, baseURL, clientName string, debug bool, logger debugLogger, httpClient, streamClient *http.Client) *Client {
 	if httpClient == nil {
 		httpClient = newHTTPClient(120 * time.Second)
 	}
 	if streamClient == nil {
 		streamClient = newStreamClient()
 	}
+	if clientName == "" {
+		clientName = defaultClientName
+	}
 	return &Client{
 		httpClient:   httpClient,
 		streamClient: streamClient,
 		baseURL:      strings.TrimRight(baseURL, "/"),
 		apiKey:       apiKey,
+		clientName:   clientName,
 		debug:        debug,
 		logger:       logger,
 	}
@@ -67,7 +74,7 @@ func (c *Client) headers() http.Header {
 	h := http.Header{}
 	h.Set("Authorization", "Bearer "+c.apiKey)
 	h.Set("Content-Type", "application/json")
-	h.Set("X-Title", "Proxy Privacy")
+	h.Set("X-Title", c.clientName)
 	return h
 }
 

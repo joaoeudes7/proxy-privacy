@@ -46,6 +46,7 @@ type Server struct {
 	mu          sync.RWMutex
 	Cfg         config.AppConfig
 	Env         config.EnvConfig
+	Provider    *config.ProviderConfig
 	ProxyClient *proxy.Client
 	ModelCache  *ModelCache
 }
@@ -69,6 +70,9 @@ func main() {
 	hostFlag := flag.String("host", "127.0.0.1", "Bind address")
 	keyFlag := flag.String("api-key", "", "Proxy API key (overrides env)")
 	keyShort := flag.String("k", "", "Proxy API key (overrides env)")
+	sortFlag := flag.String("sort", "", "Provider sort order: price, throughput, latency (OpenRouter)")
+	sortShort := flag.String("s", "", "Provider sort order: price, throughput, latency (OpenRouter)")
+	providerOrderFlag := flag.String("provider-order", "", "Comma-separated provider slugs for routing (OpenRouter)")
 	redactPIIFlag := flag.Bool("redact-pii", false, "Redact email addresses from messages content (default false)")
 	redactSecretsFlag := flag.Bool("redact-secrets", true, "Redact API keys and secrets from messages content")
 	flag.Usage = func() {
@@ -78,11 +82,11 @@ func main() {
 	}
 	flag.Parse()
 
-	cfg, env := resolveConfig(
+	cfg, env, prov := resolveConfig(
 		*providerFlag,
 		*privacyFlag, *privacyShort, *modelFlag, *modelShort,
 		*upstreamFlag, *upstreamKeyFlag, *keyFlag, *keyShort, *debugUpstreamFlag, *traceDirFlag,
-		*redactPIIFlag, *redactSecretsFlag,
+		*redactPIIFlag, *redactSecretsFlag, *sortFlag, *sortShort, *providerOrderFlag,
 	)
 
 	logResources, err := setupLogResources(env.DebugUpstream, env.TraceDir)
@@ -93,12 +97,23 @@ func main() {
 		defer logResources.cleanup()
 	}
 
-	s := newServer(cfg, env, logResources.traceLogger)
-	if cfg.DefaultModel == "" {
+	s := newServer(cfg, env, prov, logResources.traceLogger)
+	if cfg.DefaultModel == "" && s.Provider != nil {
 		if id := fetchFirstModel(s.ProxyClient); id != "" {
 			s.Cfg.DefaultModel = id
 			cfg.DefaultModel = id
-			config.SaveAppConfig(cfg)
+			s.Provider.DefaultModel = id
+			proxyCfg, _ := config.LoadProxyConfig()
+			if proxyCfg != nil {
+				proxyCfg.DefaultModel = ""
+				for i := range proxyCfg.Providers {
+					if proxyCfg.Providers[i].ID == s.Provider.ID {
+						proxyCfg.Providers[i].DefaultModel = id
+						break
+					}
+				}
+				config.SaveProxyConfig(proxyCfg)
+			}
 		}
 	}
 	mux := setupRouter(s)
@@ -116,7 +131,7 @@ func main() {
 	log.Fatal(srv.ListenAndServe())
 }
 
-func resolveConfig(providerFlag, privacyFlag, privacyShort, modelFlag, modelShort, upstreamFlag, upstreamKeyFlag, keyFlag, keyShort string, debugUpstreamFlag bool, traceDirFlag string, redactPIIFlag bool, redactSecretsFlag bool) (config.AppConfig, config.EnvConfig) {
+func resolveConfig(providerFlag, privacyFlag, privacyShort, modelFlag, modelShort, upstreamFlag, upstreamKeyFlag, keyFlag, keyShort string, debugUpstreamFlag bool, traceDirFlag string, redactPIIFlag bool, redactSecretsFlag bool, sortFlag, sortShort, providerOrderFlag string) (config.AppConfig, config.EnvConfig, *config.ProviderConfig) {
 	privacyMode := privacyFlag
 	if privacyShort != "standard" {
 		privacyMode = privacyShort
@@ -130,20 +145,26 @@ func resolveConfig(providerFlag, privacyFlag, privacyShort, modelFlag, modelShor
 		model = modelShort
 	}
 
-	appCfg, err := config.LoadAppConfig()
+	proxyCfg, err := config.LoadProxyConfig()
 	if err != nil {
 		log.Printf("Warning: %v", err)
-		appCfg = config.DefaultAppConfig()
+		proxyCfg = config.DefaultProxyConfig()
 	}
-	appCfg.PrivacyMode = config.PrivacyMode(privacyMode)
-	appCfg.DefaultModel = model
-	appCfg.RedactPII = redactPIIFlag
-	appCfg.RedactSecrets = redactSecretsFlag
+
+	if privacyMode != "" {
+		proxyCfg.PrivacyMode = config.PrivacyMode(privacyMode)
+	}
+	proxyCfg.RedactPII = redactPIIFlag
+	proxyCfg.RedactSecrets = redactSecretsFlag
+
+	appCfg := proxyCfg.AppConfig()
 
 	envCfg := config.LoadEnvConfig()
 
-	configs, _ := config.LoadConfigs()
-	if provider, ok := config.SelectProvider(configs, providerFlag); ok {
+	var selectedProvider *config.ProviderConfig
+
+	if provider, ok := config.SelectProvider(proxyCfg.Providers, providerFlag); ok {
+		selectedProvider = &provider
 		if envCfg.UpstreamBaseURL == "" {
 			envCfg.UpstreamBaseURL = provider.BaseURL
 		}
@@ -153,11 +174,42 @@ func resolveConfig(providerFlag, privacyFlag, privacyShort, modelFlag, modelShor
 		if appCfg.DefaultModel == "" && provider.DefaultModel != "" {
 			appCfg.DefaultModel = provider.DefaultModel
 		}
+		if model != "" {
+			appCfg.DefaultModel = model
+			for i := range proxyCfg.Providers {
+				if proxyCfg.Providers[i].ID == provider.ID {
+					proxyCfg.Providers[i].DefaultModel = model
+					break
+				}
+			}
+		}
 	} else if envCfg.UpstreamBaseURL == "" && envCfg.APIKey == "" {
 		if providerFlag != "" {
 			log.Fatalf("Provider %q not found in configs.json.", providerFlag)
 		}
 		log.Fatal("No providers configured. Create ~/.proxy-privacy/configs.json or set UPSTREAM_BASE_URL and OPENAI_API_KEY env vars.")
+	}
+
+	sortVal := sortFlag
+	if sortShort != "" {
+		sortVal = sortShort
+	}
+	if sortVal != "" || providerOrderFlag != "" {
+		if selectedProvider != nil {
+			if selectedProvider.ProviderPrefs == nil {
+				selectedProvider.ProviderPrefs = make(map[string]any)
+			}
+			if sortVal != "" {
+				selectedProvider.ProviderPrefs["sort"] = sortVal
+			}
+			if providerOrderFlag != "" {
+				selectedProvider.ProviderPrefs["order"] = strings.Split(providerOrderFlag, ",")
+			}
+		}
+	}
+	if sortVal != "" || providerOrderFlag != "" {
+		proxyCfg.DefaultModel = ""
+		config.SaveProxyConfig(proxyCfg)
 	}
 
 	if upstreamFlag != "" {
@@ -185,11 +237,12 @@ func resolveConfig(providerFlag, privacyFlag, privacyShort, modelFlag, modelShor
 		envCfg.TraceDir = traceDirFlag
 	}
 
-	if err := config.SaveAppConfig(appCfg); err != nil {
+	proxyCfg.DefaultModel = ""
+	if err := config.SaveProxyConfig(proxyCfg); err != nil {
 		log.Printf("Warning: could not save config: %v", err)
 	}
 
-	return appCfg, envCfg
+	return appCfg, envCfg, selectedProvider
 }
 
 func cloneBody(body map[string]any) map[string]any {
@@ -214,11 +267,12 @@ func shallowCopy(m map[string]any) map[string]any {
 	return c
 }
 
-func newServer(cfg config.AppConfig, env config.EnvConfig, traceLogger interface{ Printf(string, ...any) }) *Server {
+func newServer(cfg config.AppConfig, env config.EnvConfig, prov *config.ProviderConfig, traceLogger interface{ Printf(string, ...any) }) *Server {
 	return &Server{
 		Cfg:         cfg,
 		Env:         env,
-		ProxyClient: proxy.New(env.APIKey, env.UpstreamBaseURL, env.DebugUpstream, traceLogger),
+		Provider:    prov,
+		ProxyClient: proxy.New(env.APIKey, env.UpstreamBaseURL, config.DefaultClientName, env.DebugUpstream, traceLogger),
 		ModelCache:  NewModelCache(),
 	}
 }
@@ -442,11 +496,13 @@ func (s *Server) handleCompletions(w http.ResponseWriter, r *http.Request) {
 		model = c.DefaultModel
 		reqBody["model"] = model
 	}
+	s.injectModelConfig(reqBody)
 
 	// Standard mode: try strict first, fall back on provider rejection
 	if c.PrivacyMode == config.PrivacyStandard && !s.ModelCache.RejectsStrict(model) {
 		clone := cloneBody(reqBody)
 		clone = privacy.Apply(clone, config.PrivacyStrict, c.RedactPII, c.RedactSecrets)
+		s.injectProviderPrefs(clone)
 		cloneBytes, _ := json.Marshal(clone)
 
 		status, headers, respBody, err := s.ProxyClient.Completion(cloneBytes)
@@ -475,6 +531,7 @@ func (s *Server) handleCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	reqBody = privacy.Apply(reqBody, c.PrivacyMode, c.RedactPII, c.RedactSecrets)
+	s.injectProviderPrefs(reqBody)
 	modifiedBody, _ := json.Marshal(reqBody)
 
 	status, headers, respBody, err := s.ProxyClient.Completion(modifiedBody)
@@ -513,7 +570,11 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	isAnthropic := r.Header.Get("anthropic-version") != "" || strings.HasPrefix(r.UserAgent(), "Claude")
 	isCodex := r.URL.Query().Get("client_version") != "" || strings.HasPrefix(r.UserAgent(), "Codex")
 
-	if isCodex && status < 400 {
+	if status >= 400 {
+		goto respond
+	}
+
+	if isCodex {
 		var oaiResp struct {
 			Data []struct {
 				ID string `json:"id"`
@@ -524,7 +585,7 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 			for _, m := range oaiResp.Data {
 				codexModels = append(codexModels, map[string]any{
 					"slug":                          m.ID,
-					"display_name":                  m.ID,
+					"display_name":                  formatModelDisplayName(m.ID),
 					"supported_reasoning_levels":    []string{},
 					"shell_type":                    "shell_command",
 					"visibility":                    "list",
@@ -539,7 +600,7 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 			}
 			body, _ = json.Marshal(map[string]any{"models": codexModels})
 		}
-	} else if isAnthropic && status < 400 {
+	} else if isAnthropic {
 		var oaiResp struct {
 			Data []struct {
 				ID      string `json:"id"`
@@ -554,7 +615,7 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 				anthroData = append(anthroData, map[string]any{
 					"type":         "model",
 					"id":           m.ID,
-					"display_name": m.ID,
+					"display_name": formatModelDisplayName(m.ID),
 					"created_at":   time.Unix(m.Created, 0).UTC().Format(time.RFC3339),
 				})
 			}
@@ -568,7 +629,21 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 			anthroResp["has_more"] = false
 			body, _ = json.Marshal(anthroResp)
 		}
+	} else {
+		var upstream struct {
+			Data []map[string]any `json:"data"`
+		}
+		if err := json.Unmarshal(body, &upstream); err == nil {
+			for i, m := range upstream.Data {
+				id, _ := m["id"].(string)
+				m["display_name"] = formatModelDisplayName(id)
+				upstream.Data[i] = m
+			}
+			body, _ = json.Marshal(upstream)
+		}
 	}
+
+respond:
 
 	for k, vs := range filterHeaders(headers) {
 		for _, v := range vs {
@@ -620,6 +695,9 @@ func (s *Server) handleAdminConfig(w http.ResponseWriter, r *http.Request) {
 		}
 		if dm, ok := update["default_model"].(string); ok {
 			s.Cfg.DefaultModel = dm
+			if s.Provider != nil {
+				s.Provider.DefaultModel = dm
+			}
 		}
 		if rp, ok := update["redact_pii"].(bool); ok {
 			s.Cfg.RedactPII = rp
@@ -629,8 +707,21 @@ func (s *Server) handleAdminConfig(w http.ResponseWriter, r *http.Request) {
 		}
 		s.mu.Unlock()
 		c := s.loadCfg()
-		if err := config.SaveAppConfig(c); err != nil {
-			log.Printf("Warning: could not save config: %v", err)
+		proxyCfg, _ := config.LoadProxyConfig()
+		if proxyCfg != nil {
+			proxyCfg.DefaultModel = ""
+			if dm, ok := update["default_model"].(string); ok {
+				for i := range proxyCfg.Providers {
+					if proxyCfg.Providers[i].ID == s.Provider.ID {
+						proxyCfg.Providers[i].DefaultModel = dm
+						break
+					}
+				}
+			}
+			proxyCfg.ApplyAppConfig(c)
+			if err := config.SaveProxyConfig(proxyCfg); err != nil {
+				log.Printf("Warning: could not save config: %v", err)
+			}
 		}
 		s.respondJSON(w, http.StatusOK, c)
 	default:
@@ -768,17 +859,53 @@ func (s *Server) forwardChatLikeAnthropic(w http.ResponseWriter, reqBody map[str
 	s.respondBytes(w, status, "application/json", translated)
 }
 
+func (s *Server) injectProviderPrefs(body map[string]any) {
+	if s.Provider == nil || len(s.Provider.ProviderPrefs) == 0 {
+		return
+	}
+	p, ok := body["provider"].(map[string]any)
+	if !ok {
+		return
+	}
+	for k, v := range s.Provider.ProviderPrefs {
+		if _, has := p[k]; !has {
+			p[k] = v
+		}
+	}
+}
+
+func (s *Server) injectModelConfig(body map[string]any) {
+	if s.Provider == nil || s.Provider.Models == nil {
+		return
+	}
+	model, _ := body["model"].(string)
+	if model == "" {
+		return
+	}
+	params, ok := s.Provider.Models[model]
+	if !ok {
+		return
+	}
+	for k, v := range params {
+		if _, has := body[k]; !has {
+			body[k] = v
+		}
+	}
+}
+
 func (s *Server) forwardChatLike(reqBody map[string]any, c config.AppConfig) (string, bool, int, http.Header, []byte, error) {
 	model, _ := reqBody["model"].(string)
 	if model == "" {
 		model = c.DefaultModel
 		reqBody["model"] = model
 	}
+	s.injectModelConfig(reqBody)
 	isStream := isStreaming(reqBody)
 
 	if c.PrivacyMode == config.PrivacyStandard && !s.ModelCache.RejectsStrict(model) {
 		clone := cloneBody(reqBody)
 		clone = privacy.Apply(clone, config.PrivacyStrict, c.RedactPII, c.RedactSecrets)
+		s.injectProviderPrefs(clone)
 		clone["stream"] = isStream
 
 		status, headers, respBody, err := s.sendChatLike(clone, isStream)
@@ -796,6 +923,7 @@ func (s *Server) forwardChatLike(reqBody map[string]any, c config.AppConfig) (st
 	}
 
 	reqBody = privacy.Apply(reqBody, c.PrivacyMode, c.RedactPII, c.RedactSecrets)
+	s.injectProviderPrefs(reqBody)
 	reqBody["stream"] = isStream
 	status, headers, respBody, err := s.sendChatLike(reqBody, isStream)
 	return model, isStream, status, headers, respBody, err
@@ -984,6 +1112,58 @@ func filterHeaders(headers http.Header) http.Header {
 		}
 	}
 	return filtered
+}
+
+var modelAbbrevs = map[string]string{
+	"gpt": "GPT", "ai": "AI", "api": "API", "cli": "CLI",
+	"r1": "R1", "o1": "O1", "o3": "O3", "ui": "UI", "id": "ID",
+}
+
+func formatModelDisplayName(id string) string {
+	parts := strings.Split(id, "/")
+	raw := parts[len(parts)-1]
+	words := strings.Split(raw, "-")
+	for i, w := range words {
+		if w == "" {
+			continue
+		}
+		if v, ok := modelAbbrevs[strings.ToLower(w)]; ok {
+			words[i] = v
+			continue
+		}
+		upper := strings.ToUpper(w)
+		if upper == w && len(w) > 1 {
+			words[i] = upper
+			continue
+		}
+		if len(w) > 1 && w[len(w)-1] == 'b' {
+			allDigitExceptB := true
+			for _, c := range w[:len(w)-1] {
+				if c < '0' || c > '9' {
+					allDigitExceptB = false
+					break
+				}
+			}
+			if allDigitExceptB {
+				words[i] = w[:len(w)-1] + "B"
+				continue
+			}
+		}
+		allDigits := true
+		for _, c := range w {
+			if c < '0' || c > '9' {
+				allDigits = false
+				break
+			}
+		}
+		if allDigits {
+			continue
+		}
+		lower := strings.ToLower(w)
+		words[i] = strings.ToUpper(w[:1]) + lower[1:]
+	}
+	name := strings.Join(words, " ")
+	return fmt.Sprintf("%s (%s)", name, id)
 }
 
 func fetchFirstModel(client *proxy.Client) string {

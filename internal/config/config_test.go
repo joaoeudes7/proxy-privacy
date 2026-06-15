@@ -116,7 +116,7 @@ func TestConfigPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := filepath.Join(home, ".proxy-privacy", "config.json")
+	want := filepath.Join(home, ".proxy-privacy", "configs.json")
 	if path != want {
 		t.Errorf("ConfigPath() = %q, want %q", path, want)
 	}
@@ -184,7 +184,7 @@ func TestLoadAppConfig_invalidJSON(t *testing.T) {
 	if err := os.MkdirAll(configDir, 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(configDir, "config.json"), []byte("{bad json}"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(configDir, "configs.json"), []byte("{bad json}"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -209,18 +209,15 @@ func TestSaveAppConfig(t *testing.T) {
 	}
 
 	// Verify file was created
-	configFile := filepath.Join(dir, ".proxy-privacy", "config.json")
+	configFile := filepath.Join(dir, ".proxy-privacy", "configs.json")
 	data, err := os.ReadFile(configFile)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	var loaded AppConfig
+	var loaded ProxyConfig
 	if err := json.Unmarshal(data, &loaded); err != nil {
 		t.Fatal(err)
-	}
-	if loaded.DefaultModel != "custom-model" {
-		t.Errorf("DefaultModel = %q, want %q", loaded.DefaultModel, "custom-model")
 	}
 	if loaded.PrivacyMode != PrivacyStrict {
 		t.Errorf("PrivacyMode = %q, want %q", loaded.PrivacyMode, PrivacyStrict)
@@ -501,7 +498,7 @@ func TestSaveAppConfig_createsDir(t *testing.T) {
 	if _, err := os.Stat(configDir); os.IsNotExist(err) {
 		t.Error("SaveAppConfig did not create the config directory")
 	}
-	configFile := filepath.Join(configDir, "config.json")
+	configFile := filepath.Join(configDir, "configs.json")
 	if _, err := os.Stat(configFile); os.IsNotExist(err) {
 		t.Error("SaveAppConfig did not create the config file")
 	}

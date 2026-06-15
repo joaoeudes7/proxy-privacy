@@ -74,7 +74,15 @@ func Apply(body map[string]any, mode config.PrivacyMode, redactPII bool, redactS
 	if body == nil {
 		body = make(map[string]any)
 	}
-	body["provider"] = BuildProvider(mode)
+	providerParams := BuildProvider(mode)
+	if existing, ok := body["provider"].(map[string]any); ok {
+		for k, v := range providerParams {
+			existing[k] = v
+		}
+		body["provider"] = existing
+	} else {
+		body["provider"] = providerParams
+	}
 	if redactPII || redactSecrets {
 		if msgs, ok := body["messages"].([]any); ok {
 			for _, m := range msgs {
