@@ -1,4 +1,8 @@
 <p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="assets/logo.svg">
+    <img src="assets/logo.svg" width="160" height="160" alt="Proxy Privacy Logo">
+  </picture>
   <h1 align="center">Proxy Privacy</h1>
   <p align="center"><strong>OpenAI-compatible privacy proxy for AI agents</strong></p>
   <p align="center">

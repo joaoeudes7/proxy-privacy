@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400" width="400" height="400">
+  <defs>
+    <linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#6366f1"/>
+      <stop offset="100%" stop-color="#8b5cf6"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Shield -->
+  <path d="M200 30 L340 85 L340 200 C340 300 200 375 200 375 C200 375 60 300 60 200 L60 85 Z"
+        fill="url(#g)" stroke="#4f46e5" stroke-width="4"/>
+
+  <!-- Inner shield -->
+  <path d="M200 55 L318 102 L318 195 C318 282 200 350 200 350 C200 350 82 282 82 195 L82 102 Z"
+        fill="none" stroke="rgba(255,255,255,0.12)" stroke-width="2"/>
+
+  <!-- PP monogram -->
+  <text x="200" y="175" text-anchor="middle" font-family="system-ui,-apple-system,sans-serif"
+        font-size="110" font-weight="700" fill="#ffffff" letter-spacing="-2">PP</text>
+
+  <!-- Arrow accent beneath -->
+  <path d="M140 220 L260 220 M220 200 L260 220 L220 240"
+        fill="none" stroke="rgba(255,255,255,0.5)" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
