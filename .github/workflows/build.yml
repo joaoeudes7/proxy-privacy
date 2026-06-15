@@ -1,0 +1,41 @@
+name: Build and Release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+
+jobs:
+  ci:
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: true
+
+      - run: go vet ./...
+      - run: go test ./... -count=1
+
+      - name: Build Linux amd64
+        run: GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o build/proxy-privacy-linux-amd64 ./cmd/proxy-privacy
+      - name: Build macOS amd64
+        run: GOOS=darwin GOARCH=amd64 go build -ldflags="-s -w" -o build/proxy-privacy-darwin-amd64 ./cmd/proxy-privacy
+      - name: Build macOS arm64
+        run: GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w" -o build/proxy-privacy-darwin-arm64 ./cmd/proxy-privacy
+      - name: Build Windows amd64
+        run: GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o build/proxy-privacy-windows-amd64.exe ./cmd/proxy-privacy
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: proxy-privacy-binaries
+          path: build/
+
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/*

@@ -1,0 +1,5 @@
+.gocache
+build/
+*.db
+*.log
+.DS_Store
