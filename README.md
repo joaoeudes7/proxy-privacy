@@ -17,6 +17,21 @@
 
 Works as a **drop-in proxy** for Claude Code, Codex CLI, OpenCode, Cline, Cursor, Copilot, and any OpenAI-compatible client.
 
+## AI Agent Prompt
+
+Paste this into any AI agent (Claude Code, OpenCode, Codex, Pi, etc.):
+
+> Install proxy-privacy, then load the skill at `skills/proxy-provider-setup/SKILL.md` and follow its instructions to configure providers for me.
+
+The agent will:
+
+1. Download and install the binary
+2. Load the provider-setup skill
+3. Ask which providers you want (OpenAI, OpenRouter, Anthropic, etc.)
+4. Auto-resolve their API base URLs
+5. Write `~/.proxy-privacy/configs.json` with empty API keys
+6. Tell you to fill in the keys manually
+
 ## Install
 
 ```bash
